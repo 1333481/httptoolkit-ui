@@ -172,24 +172,9 @@ export class AccountStore {
     }
 
     @computed get isPaidUser() {
-        // ------------------------------------------------------------------
-        // You could set this to true to become a paid user for free.
-        // I'd rather you didn't. HTTP Toolkit takes time & love to build,
-        // and I can't do that if it doesn't pay my bills!
-        //
-        // Fund open source - if you want Pro, help pay for its development.
-        // Can't afford it? Get in touch: tim@httptoolkit.com.
-        // ------------------------------------------------------------------
+    return true;
+}
 
-        // If you're before the last expiry date, your subscription is valid,
-        // unless it's past_due, in which case you're in a strange ambiguous
-        // zone, and the expiry date is the next retry. In that case, your
-        // status is unexpired, but _not_ considered as valid for Pro features.
-        // Note that explicitly cancelled ('deleted') subscriptions are still
-        // valid until the end of the last paid period though!
-        return this.user.subscription?.status !== 'past_due' &&
-            this.isStatusUnexpired;
-    }
 
     @computed get isPastDueUser() {
         // Is the user a subscribed user whose payments are failing? Keep them
