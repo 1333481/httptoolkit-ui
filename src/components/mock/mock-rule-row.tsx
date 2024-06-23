@@ -127,6 +127,7 @@ export const AddRuleRow = styled((p: {
         collapsed={true}
         borderColor='transparent'
         {..._.omit(p, 'onAdd')}
+        role="button"
 
         tabIndex={0}
         depth={0}
@@ -221,33 +222,6 @@ const RuleMenu = (p: {
     onDelete: (event: React.UIEvent) => void,
 }) => <RuleMenuContainer topOffset={7}>
         <IconMenuButton
-            title='Delete this rule'
-            icon={['far', 'trash-alt']}
-            onClick={p.onDelete}
-        />
-        <IconMenuButton
-            title='Clone this rule'
-            icon={['far', 'clone']}
-            onClick={p.onClone}
-        />
-        <IconMenuButton
-            title={p.toggleState ? 'Deactivate this rule' : 'Activate this rule'}
-            icon={['fas', p.toggleState ? 'toggle-on' : 'toggle-off']}
-            onClick={p.onToggleActivation}
-        />
-        <IconMenuButton
-            title='Give this rule a custom name'
-            icon={['fas', 'edit']}
-            disabled={p.isEditingTitle}
-            onClick={p.onSetCustomTitle}
-        />
-        <IconMenuButton
-            title='Revert this rule to the last saved version'
-            icon={['fas', 'undo']}
-            disabled={!p.hasUnsavedChanges || p.isNewRule}
-            onClick={p.onReset}
-        />
-        <IconMenuButton
             icon={['fas',
                 p.hasUnsavedChanges
                     ? 'save'
@@ -261,6 +235,33 @@ const RuleMenu = (p: {
                     ? 'Show rule details'
                 : 'Hide rule details'}
             onClick={p.hasUnsavedChanges ? p.onSave : p.onToggleCollapse}
+        />
+        <IconMenuButton
+            title='Revert this rule to the last saved version'
+            icon={['fas', 'undo']}
+            disabled={!p.hasUnsavedChanges || p.isNewRule}
+            onClick={p.onReset}
+        />
+        <IconMenuButton
+            title='Give this rule a custom name'
+            icon={['fas', 'edit']}
+            disabled={p.isEditingTitle}
+            onClick={p.onSetCustomTitle}
+        />
+        <IconMenuButton
+            title={p.toggleState ? 'Deactivate this rule' : 'Activate this rule'}
+            icon={['fas', p.toggleState ? 'toggle-on' : 'toggle-off']}
+            onClick={p.onToggleActivation}
+        />
+        <IconMenuButton
+            title='Clone this rule'
+            icon={['far', 'clone']}
+            onClick={p.onClone}
+        />
+        <IconMenuButton
+            title='Delete this rule'
+            icon={['far', 'trash-alt']}
+            onClick={p.onDelete}
         />
     </RuleMenuContainer>;
 
@@ -384,6 +385,7 @@ export class RuleRow extends React.Component<{
                     provided.innerRef(ref);
                     this.containerRef = ref;
                 }}
+                aria-expanded={!collapsed}
                 collapsed={collapsed}
                 deactivated={!rule.activated}
                 disabled={disabled}
@@ -407,7 +409,14 @@ export class RuleRow extends React.Component<{
                     isEditingTitle={isEditingTitle}
                     onSetCustomTitle={this.startEnteringCustomTitle}
                 />
-                <DragHandle {...provided.dragHandleProps} />
+                <DragHandle
+                    aria-label={`Drag handle for ${
+                        (shouldShowCustomTitle || isEditingTitle) && rule.title
+                            ? `this '${rule.title}'`
+                            : 'this'
+                    } mock rule`}
+                    {...provided.dragHandleProps}
+                />
 
 
                 { shouldShowCustomTitle &&
@@ -698,7 +707,8 @@ class HandlerStepSection extends React.Component<{
             getPro,
             ruleType,
             availableHandlers,
-            handler
+            handler,
+            handlerIndex
         } = this.props;
 
         const shownHandler = this.demoHandler ?? handler;
@@ -713,6 +723,7 @@ class HandlerStepSection extends React.Component<{
                 ruleType={ruleType}
                 onChange={this.updateHandler}
                 availableHandlers={availableHandlers}
+                handlerIndex={handlerIndex}
             />
 
             { isHandlerDemo

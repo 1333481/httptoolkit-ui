@@ -38,7 +38,7 @@ const InterceptPageContainer = styled.section`
         padding: 40px;
     }
 
-    grid-auto-rows: minmax(200px, auto);
+    grid-auto-rows: minmax(210px, auto);
     grid-auto-flow: row dense;
 
     max-width: 1200px;
@@ -138,6 +138,7 @@ class InterceptPage extends React.Component<InterceptPageProps> {
                         search for connectors that could work for you:
                     </p>
                     <InterceptSearchBox
+                        aria-label="Filter the list of intercept options below"
                         value={this.filter || ''}
                         onSearch={this.onSearchInput}
                     />
