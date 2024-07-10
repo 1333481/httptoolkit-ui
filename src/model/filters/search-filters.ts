@@ -658,7 +658,7 @@ class HostnameFilter extends Filter {
         } else if (op === '=') {
             return `requests to ${hostname}`;
         } else {
-            return `requests to a hostname ${operationDescriptions[op]} ${hostname || 'a given value'}`;
+            return `requests to any hostname ${operationDescriptions[op]} ${hostname || 'a given value'}`;
         }
     }
 
@@ -717,7 +717,7 @@ class PortFilter extends Filter {
         } else if (op === '=') {
             return `requests to port ${port}`;
         } else {
-            return `requests to a port ${operationDescriptions[op]} ${port || 'a given port'}`;
+            return `requests to any port ${operationDescriptions[op]} ${port || 'a given value'}`;
         }
     }
 
@@ -781,7 +781,7 @@ class PathFilter extends Filter {
         } else if (op === '=') {
             return `requests to ${path}`;
         } else {
-            return `requests to a path ${operationDescriptions[op]} ${path || 'a given path'}`;
+            return `requests to any path ${operationDescriptions[op]} ${path || 'a given value'}`;
         }
     }
 
@@ -1058,7 +1058,7 @@ class HeaderFilter extends Filter {
         );
 
         if (!headerName) {
-            return "exchanges by a specific header";
+            return "exchanges with a specific header";
         } else if (!op) {
             return `exchanges with a '${headerName}' header`;
         } else {
@@ -1389,7 +1389,10 @@ class NotFilter extends Filter {
     static filterName = "not";
 
     static filterDescription(value: string, isTemplate: boolean) {
-        const innerValue = value.slice(4, -1);
+        const hasFinalBracket = value[value.length - 1] === ')';
+        const innerValue = hasFinalBracket
+            ? value.slice(4, -1)
+            : value.slice(4);
 
         if (innerValue.length === 0) {
             return "exchanges that do not match a given condition"
@@ -1399,7 +1402,11 @@ class NotFilter extends Filter {
                 match: matchSyntax(filter.filterSyntax, innerValue, 0)
             })).filter(({ match }) => (match?.partiallyConsumed || 0) > 0);
 
-            const bestMatch = _.maxBy(matches, m => m.match!.partiallyConsumed);
+            const bestMatch = _.maxBy(matches, m =>
+                // Use both, to ensure that fuller matches go before more partial
+                // matches (e.g. header/headers) when both are available
+                m.match!.fullyConsumed + m.match!.partiallyConsumed
+            );
             const innerDescription = bestMatch
                 ? bestMatch.filter.filterDescription(innerValue, isTemplate)
                 : '...';

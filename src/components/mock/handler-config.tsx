@@ -3,6 +3,10 @@ import * as React from 'react';
 import { action, observable, reaction, autorun, observe, runInAction, computed } from 'mobx';
 import { observer, disposeOnUnmount, inject } from 'mobx-react';
 import * as dedent from 'dedent';
+import {
+    Operation as JsonPatchOperation,
+    validate as validateJsonPatch
+} from 'fast-json-patch';
 
 import { Headers, RawHeaders } from '../../types';
 import { css, styled } from '../../styles';
@@ -23,6 +27,10 @@ import {
     HEADER_NAME_REGEX,
     setHeaderValue
 } from '../../util/headers';
+import {
+    ADVANCED_PATCH_TRANSFORMS,
+    serverSupports
+} from '../../services/service-versions';
 
 import {
     Handler,
@@ -273,13 +281,16 @@ const BodyHeader = styled.div`
     }
 `;
 
-const BodyContainer = styled.div`
+const BodyContainer = styled.div<{ isInvalid?: boolean }>`
     margin-top: 5px;
 
     > div {
         margin-top: 5px;
         border-radius: 4px;
-        border: solid 1px ${p => p.theme.containerBorder};
+        border: solid 1px ${p => p.isInvalid
+            ? p.theme.warningColor
+            : p.theme.containerBorder
+        };
         padding: 1px;
     }
 `;
@@ -1105,8 +1116,10 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
     private static readonly FIELDS = [
         'replaceBody',
         'replaceBodyFromFile',
-        'updateJsonBody'
-    ] as const;
+        'updateJsonBody',
+        'patchJsonBody',
+        'matchReplaceBody'
+    ] as const satisfies ReadonlyArray<keyof RequestTransform & ResponseTransform>;
 
     @computed
     get bodyReplacementBuffer() {
@@ -1120,8 +1133,11 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
             onTransformTypeChange,
             setBodyReplacement,
             selectBodyReplacementFile,
-            setJsonBodyUpdate
+            setJsonBodyUpdate,
+            setJsonBodyPatch
         } = this;
+
+        const advancedPatchesSupported = serverSupports(ADVANCED_PATCH_TRANSFORMS);
 
         const selected = _.find(BodyTransformConfig.FIELDS, (field) =>
             transform[field] !== undefined
@@ -1134,11 +1150,15 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
                 <option value='none'>Pass through the real { type } body</option>
                 <option value='replaceBody'>Replace the { type } body with a fixed value</option>
                 <option value='replaceBodyFromFile'>Replace the { type } body with a file</option>
-                <option value='updateJsonBody'>Update values within a JSON { type } body</option>
+                <option value='updateJsonBody'>Update a JSON { type } body by merging data</option>
+                { advancedPatchesSupported && <>
+                    <option value='patchJsonBody'>Update a JSON { type } body using JSON patch</option>
+                    <option value='matchReplaceBody'>Match & replace text in the { type } body</option>
+                </> }
             </SelectTransform>
             {
                 selected === 'replaceBody'
-                    ? <RawBodyTransfomConfig
+                    ? <RawBodyTransformConfig
                         type={type}
                         body={bodyReplacementBuffer}
                         updateBody={setBodyReplacement}
@@ -1165,7 +1185,21 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
                         body={transform.updateJsonBody!}
                         updateBody={setJsonBodyUpdate}
                     />
-                : null
+                : selected === 'patchJsonBody'
+                    ? <JsonPatchTransformConfig
+                        type={type}
+                        operations={transform.patchJsonBody!}
+                        updateOperations={setJsonBodyPatch}
+                    />
+                : selected === 'matchReplaceBody'
+                    ? <MatchReplaceBodyTransformConfig
+                        type={type}
+                        replacements={transform.matchReplaceBody!}
+                        updateReplacements={this.props.onChange('matchReplaceBody')}
+                    />
+                : selected === 'none'
+                    ? null
+                : unreachableCheck(selected)
             }
         </TransformConfig>;
     }
@@ -1176,11 +1210,17 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
         this.clearValues();
         if (value === 'updateJsonBody') {
             this.props.onChange('updateJsonBody')({});
+        } else if (value === 'patchJsonBody') {
+            this.props.onChange('patchJsonBody')([]);
         } else if (value === 'replaceBody') {
             this.props.onChange('replaceBody')('');
         } else if (value === 'replaceBodyFromFile') {
             this.props.onChange('replaceBodyFromFile')('');
-        }
+        } else if (value === 'matchReplaceBody') {
+            this.props.onChange('matchReplaceBody')([]);
+        } else if (value === 'none') {
+            return;
+        } else unreachableCheck(value);
     };
 
     @action.bound
@@ -1211,9 +1251,15 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
         this.clearValues();
         this.props.onChange('updateJsonBody')(body);
     };
+
+    @action.bound
+    setJsonBodyPatch(operations: Array<JsonPatchOperation>) {
+        this.clearValues();
+        this.props.onChange('patchJsonBody')(operations);
+    };
 };
 
-const RawBodyTransfomConfig = (props: {
+const RawBodyTransformConfig = (props: {
     type: 'request' | 'response',
     body: Buffer,
     updateBody: (body: string) => void
@@ -1276,7 +1322,7 @@ const JsonUpdateTransformConfig = (props: {
 
     return <TransformDetails>
         <BodyHeader>
-            <SectionLabel>JSON { props.type } body patch</SectionLabel>
+            <SectionLabel>JSON to merge into { props.type } body</SectionLabel>
             { error && <WarningIcon title={error.message} /> }
 
             <StandaloneFormatButton
@@ -1285,7 +1331,7 @@ const JsonUpdateTransformConfig = (props: {
                 onFormatted={setBodyString}
             />
         </BodyHeader>
-        <BodyContainer>
+        <BodyContainer isInvalid={!!error}>
             <SelfSizedEditor
                 contentId={null}
                 language='json'
@@ -1295,6 +1341,123 @@ const JsonUpdateTransformConfig = (props: {
         </BodyContainer>
     </TransformDetails>;
 };
+
+const JsonPatchTransformConfig = (props: {
+    type: 'request' | 'response',
+    operations: Array<JsonPatchOperation>,
+    updateOperations: (operations: Array<JsonPatchOperation>) => void
+}) => {
+    const [error, setError] = React.useState<Error>();
+
+    const [operationsString, setOperationsString] = React.useState<string>(
+        JSON.stringify(props.operations, null, 2)
+    );
+
+    React.useEffect(() => {
+        try {
+            const parsedInput = JSON.parse(operationsString);
+
+            const validationError = validateJsonPatch(parsedInput);
+            if (validationError) throw validationError;
+
+            props.updateOperations(parsedInput);
+            setError(undefined);
+        } catch (e) {
+            setError(asError(e));
+        }
+    }, [operationsString]);
+
+    return <TransformDetails>
+        <BodyHeader>
+            <SectionLabel>JSON { props.type } body patch (see <a
+                href="https://jsonpatch.com/"
+            >jsonpatch.com</a>)</SectionLabel>
+            { error && <WarningIcon title={error.message} /> }
+
+            <StandaloneFormatButton
+                format='json'
+                content={asBuffer(operationsString)}
+                onFormatted={setOperationsString}
+            />
+        </BodyHeader>
+        <BodyContainer isInvalid={!!error}>
+            <SelfSizedEditor
+                contentId={null}
+                language='json'
+                value={operationsString}
+                onChange={(content) => setOperationsString(content)}
+            />
+        </BodyContainer>
+    </TransformDetails>;
+};
+
+const MatchReplaceBodyTransformConfig = (props: {
+    type: 'request' | 'response',
+    replacements: Array<[RegExp | string, string]>,
+    updateReplacements: (replacements: Array<[RegExp | string, string]>) => void
+}) => {
+    const [error, setError] = React.useState<Error>();
+
+    const [replacementPairs, updatePairs] = React.useState<PairsArray>(
+        props.replacements.map(([match, replace]) => ({
+            key: match instanceof RegExp
+                ? match.source
+                // It's type-possible to get a string here (since Mockttp supports it)
+                // but it shouldn't be runtime-possible as we always use regex
+                : _.escapeRegExp(match),
+            value: replace
+        }))
+    );
+
+    React.useEffect(() => {
+        const validPairs = replacementPairs.filter((pair) =>
+            validateRegexMatcher(pair.key) === true
+        );
+        const invalidCount = replacementPairs.length - validPairs.length;
+
+        if (invalidCount > 0) {
+            setError(new Error(
+                `${invalidCount} regular expression${invalidCount === 1 ? ' is' : 's are'} invalid`
+            ));
+        } else {
+            setError(undefined);
+        }
+
+        props.updateReplacements(validPairs.map(({ key, value }) =>
+            [new RegExp(key, 'g'), value]
+        ));
+    }, [replacementPairs]);
+
+    return <TransformDetails>
+        <BodyHeader>
+            <SectionLabel>Regex matchers & replacements</SectionLabel>
+            { error && <WarningIcon title={error.message} /> }
+        </BodyHeader>
+        <MonoKeyEditablePairs
+            pairs={replacementPairs}
+            onChange={updatePairs}
+            keyPlaceholder='Regular expression to match'
+            keyValidation={validateRegexMatcher}
+            valuePlaceholder='Replacement value'
+            allowEmptyValues={true}
+        />
+    </TransformDetails>;
+};
+
+const MonoKeyEditablePairs = styled(EditablePairs<PairsArray>)`
+    input:nth-of-type(odd) {
+        font-family: ${p => p.theme.monoFontFamily};
+    }
+`;
+
+const validateRegexMatcher = (value: string) => {
+    try {
+        new RegExp(value, 'g');
+        return true;
+    } catch (e: any) {
+        return e.message ?? e.toString();
+    }
+}
 
 @observer
 class PassThroughHandlerConfig extends HandlerConfig<
@@ -1498,7 +1661,7 @@ class EthCallResultHandlerConfig extends HandlerConfig<EthereumCallResultHandler
                 pairs={typeValuePairs}
                 onChange={this.onChange}
                 keyPlaceholder='Return value type (e.g. string, int256, etc)'
-                keyPattern={NATIVE_ETH_TYPES_PATTERN}
+                keyValidation={NATIVE_ETH_TYPES_PATTERN}
                 valuePlaceholder='Return value'
                 allowEmptyValues={true}
             />
@@ -1732,7 +1895,7 @@ class JsonBasedHandlerConfig<H extends Handler> extends HandlerConfig<H, {
                     onFormatted={this.onChange}
                 />
             </BodyHeader>
-            <BodyContainer>
+            <BodyContainer isInvalid={!!error}>
                 <SelfSizedEditor
                     contentId={null}
                     language='json'
