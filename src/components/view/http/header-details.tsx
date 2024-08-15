@@ -4,9 +4,13 @@ import { inject, observer } from 'mobx-react';
 
 import { styled } from '../../../styles';
 import { RawHeaders } from '../../../types';
+import { Icon } from '../../../icons';
+import { copyToClipboard } from '../../../util/ui';
 
 import { getHeaderDocs } from '../../../model/http/http-docs';
 import { AccountStore } from '../../../model/account/account-store';
+import { UiStore } from '../../../model/ui/ui-store';
+import { ContextMenuItem } from '../../../model/ui/context-menu';
 
 import { CollapsibleSection } from '../../common/collapsible-section';
 import { DocsLink } from '../../common/docs-link';
@@ -15,6 +19,7 @@ import {
     CollapsibleSectionSummary,
     CollapsibleSectionBody
 } from '../../common/collapsible-section';
+import { PillButton } from '../../common/pill';
 
 import { CookieHeaderDescription } from './set-cookie-header-description';
 import { UserAgentHeaderDescription } from './user-agent-header-description';
@@ -29,11 +34,100 @@ const HeadersGrid = styled.section`
     }
 `;
 
-const HeaderKeyValue = styled(CollapsibleSectionSummary)`
+const HeaderKeyValueContainer = styled(CollapsibleSectionSummary)`
     word-break: break-all; /* Fallback for anybody without break-word */
     word-break: break-word;
     font-family: ${p => p.theme.monoFontFamily};
     line-height: 1.1;
+`;
+
+const LONG_HEADER_LIMIT = 500;
+
+const HEADER_CONTEXT_MENU = [
+    { type: 'option', label: 'Copy header value', callback: ({ value }) => copyToClipboard(value) },
+    { type: 'option', label: 'Copy header name', callback: ({ key }) => copyToClipboard(key) },
+    { type: 'option', label: 'Copy header as "name: value"', callback: ({ key, value }) => copyToClipboard(`${key}: ${value}`) },
+] satisfies Array<ContextMenuItem<{ key: string, value: string }>>;
+
+const HeaderKeyValue = inject('uiStore')((p: {
+    headerKey: string,
+    headerValue: string,
+
+    // All injected by CollapsibleSection itself:
+    children?: React.ReactNode,
+    open?: boolean,
+    withinGrid?: boolean,
+
+    uiStore?: UiStore
+}) => {
+    const isLongValue = p.headerValue.length > LONG_HEADER_LIMIT;
+    const [isExpanded, setExpanded] = React.useState(false);
+
+    const expand = React.useCallback(() => setExpanded(true), [setExpanded]);
+    const collapse = React.useCallback(() => setExpanded(false), [setExpanded]);
+
+    const onContextMenu = React.useCallback((e: React.MouseEvent) => {
+        if (window.getSelection()?.type === 'Range') return; // If you right click selected text, we delegate to defaults
+
+        p.uiStore!.handleContextMenuEvent(e, HEADER_CONTEXT_MENU, {
+            key: p.headerKey,
+            value: p.headerValue
+        });
+    }, [p.uiStore, p.headerKey, p.headerValue]);
+
+    return <HeaderKeyValueContainer
+        open={p.open}
+        withinGrid={p.withinGrid}
+        onContextMenu={onContextMenu}
+    >
+        { p.children }
+        <HeaderName>{ p.headerKey }: </HeaderName>
+        { !isLongValue
+            ? <span>{ p.headerValue }</span>
+        : isExpanded
+            ? <span>
+                { p.headerValue }
+                <LongHeaderButton
+                    title='Collapse this large header value'
+                    onClick={collapse}
+                >
+                    <Icon icon={['fas', 'minus']} />
+                </LongHeaderButton>
+            </span>
+        : // Collapsed long header:
+            <LongHeaderValue>
+                { p.headerValue.slice(0, LONG_HEADER_LIMIT - 10) }
+                <LongHeaderButton
+                    title='Expand to show the full contents of this large header value'
+                    onClick={expand}
+                >...</LongHeaderButton>
+            </LongHeaderValue>
+        }
+    </HeaderKeyValueContainer>;
+});
+
+const LongHeaderValue = styled.span`
+    position: relative;
+
+    :after {
+        content: '';
+        background-image: linear-gradient(to bottom, transparent, transparent 60%, ${p => p.theme.mainBackground});
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+    }
+`;
+
+const LongHeaderButton = styled(PillButton)`
+    position: relative;
+    z-index: 1;
+
+    vertical-align: middle;
+    padding: 2px 4px;
+    font-size: 10px;
+    margin-left: 4px;
 `;
 
 const HeaderName = styled.span`
@@ -134,10 +228,7 @@ export const HeaderDetails = inject('accountStore')(observer((props: {
             )
 
             return <CollapsibleSection withinGrid={true} key={`${key}-${i}`}>
-                <HeaderKeyValue>
-                    <HeaderName>{ key }: </HeaderName>
-                    <span>{ value }</span>
-                </HeaderKeyValue>
+                <HeaderKeyValue headerKey={key} headerValue={value} />
 
                 { description && <HeaderDescriptionContainer>
                     { description }
@@ -156,10 +247,7 @@ const PseudoHeaderDetails = observer((props: {
     return <HeadersGrid>
         { _.flatMap(props.headers, ([key, value], i) => {
             return <CollapsibleSection withinGrid={true} key={`${key}-${i}`}>
-                <HeaderKeyValue>
-                    <HeaderName>{ key }: </HeaderName>
-                    <span>{ value }</span>
-                </HeaderKeyValue>
+                <HeaderKeyValue headerKey={key} headerValue={value} />
             </CollapsibleSection>;
         }) }
     </HeadersGrid>;
