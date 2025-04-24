@@ -3,6 +3,11 @@ import { default as ReactSplitPane } from 'react-split-pane';
 
 import { styled } from '../styles';
 
+export type SplitPane = ReactSplitPane & {
+    pane1: HTMLElement | undefined;
+    pane2: HTMLElement | undefined;
+};
+
 // Styles original taken from
 // https://github.com/tomkp/react-split-pane/blob/master/README.md#example-styling
 export const SplitPane = styled(ReactSplitPane)<{
@@ -11,7 +16,7 @@ export const SplitPane = styled(ReactSplitPane)<{
 }>`
     .Resizer {
         background: #000;
-        opacity: .3;
+        opacity: .5;
         z-index: 100;
         -moz-box-sizing: border-box;
         -webkit-box-sizing: border-box;

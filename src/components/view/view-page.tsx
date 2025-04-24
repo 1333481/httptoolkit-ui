@@ -13,11 +13,11 @@ import {
 import { observer, disposeOnUnmount, inject } from 'mobx-react';
 import * as portals from 'react-reverse-portal';
 
-import { WithInjected, CollectedEvent } from '../../types';
+import { WithInjected, CollectedEvent, HttpExchangeView } from '../../types';
 import { NARROW_LAYOUT_BREAKPOINT, styled } from '../../styles';
-import { useHotkeys, isEditable, windowSize } from '../../util/ui';
+import { useHotkeys, isEditable, windowSize, AriaCtrlCmd, Ctrl } from '../../util/ui';
 import { debounceComputed } from '../../util/observable';
-import { UnreachableCheck } from '../../util/error';
+import { UnreachableCheck, unreachableCheck } from '../../util/error';
 
 import { SERVER_SEND_API_SUPPORTED, serverVersion, versionSatisfies } from '../../services/service-versions';
 
@@ -27,7 +27,7 @@ import { EventsStore } from '../../model/events/events-store';
 import { RulesStore } from '../../model/rules/rules-store';
 import { AccountStore } from '../../model/account/account-store';
 import { SendStore } from '../../model/send/send-store';
-import { HttpExchange } from '../../model/http/exchange';
+import { HttpExchange } from '../../model/http/http-exchange';
 import { FilterSet } from '../../model/filters/search-filters';
 import { buildRuleFromExchange } from '../../model/rules/rule-creation';
 
@@ -38,6 +38,7 @@ import { SelfSizedEditor } from '../editor/base-editor';
 import { ViewEventList } from './view-event-list';
 import { ViewEventListFooter } from './view-event-list-footer';
 import { ViewEventContextMenuBuilder } from './view-context-menu-builder';
+import { PaneOuterContainer } from './view-details-pane';
 import { HttpDetailsPane } from './http/http-details-pane';
 import { TlsFailureDetailsPane } from './tls/tls-failure-details-pane';
 import { TlsTunnelDetailsPane } from './tls/tls-tunnel-details-pane';
@@ -60,15 +61,27 @@ interface ViewPageProps {
 const ViewPageKeyboardShortcuts = (props: {
     isPaidUser: boolean,
     selectedEvent: CollectedEvent | undefined,
+    onFocusLeft: () => void,
+    onFocusRight: () => void,
     moveSelection: (distance: number) => void,
     onPin: (event: HttpExchange) => void,
     onResend: (event: HttpExchange) => void,
-    onMockRequest: (event: HttpExchange) => void,
+    onBuildRuleFromExchange: (event: HttpExchange) => void,
     onDelete: (event: CollectedEvent) => void,
     onClear: () => void,
     onStartSearch: () => void
 }) => {
     const selectedEvent = props.selectedEvent;
+
+    useHotkeys('Ctrl+[, Cmd+[', (event) => {
+        event.preventDefault();
+        props.onFocusLeft();
+    }, [props.onFocusLeft]);
+
+    useHotkeys('Ctrl+], Cmd+]', (event) => {
+        event.preventDefault();
+        props.onFocusRight();
+    }, [props.onFocusRight]);
 
     useHotkeys('j', (event) => {
         if (isEditable(event.target)) return;
@@ -96,12 +109,12 @@ const ViewPageKeyboardShortcuts = (props: {
 
     useHotkeys('Ctrl+m, Cmd+m', (event) => {
         if (props.isPaidUser && selectedEvent?.isHttp() && !selectedEvent?.isWebSocket()) {
-            props.onMockRequest(selectedEvent);
+            props.onBuildRuleFromExchange(selectedEvent);
             event.preventDefault();
         }
-    }, [selectedEvent, props.onMockRequest, props.isPaidUser]);
+    }, [selectedEvent, props.onBuildRuleFromExchange, props.isPaidUser]);
 
-    useHotkeys('Ctrl+Delete, Cmd+Delete', (event) => {
+    useHotkeys('Ctrl+Delete, Cmd+Delete, Ctrl+Backspace, Cmd+Backspace', (event) => {
         if (isEditable(event.target)) return;
 
         if (selectedEvent) {
@@ -109,7 +122,7 @@ const ViewPageKeyboardShortcuts = (props: {
         }
     }, [selectedEvent, props.onDelete]);
 
-    useHotkeys('Ctrl+Shift+Delete, Cmd+Shift+Delete', (event) => {
+    useHotkeys('Ctrl+Shift+Delete, Cmd+Shift+Delete, Ctrl+Shift+Backspace, Cmd+Shift+Backspace', (event) => {
         props.onClear();
         event.preventDefault();
     }, [props.onClear]);
@@ -157,6 +170,7 @@ class ViewPage extends React.Component<ViewPageProps> {
     searchInputRef = React.createRef<HTMLInputElement>();
 
     private listRef = React.createRef<ViewEventList>();
+    private splitPaneRef = React.createRef<SplitPane>();
 
     @observable
     private searchFiltersUnderConsideration: FilterSet | undefined;
@@ -173,16 +187,20 @@ class ViewPage extends React.Component<ViewPageProps> {
 
     @debounceComputed(10) // Debounce slightly - most important for body filtering performance
     get filteredEventState(): {
-        filteredEvents: CollectedEvent[],
+        filteredEvents: ReadonlyArray<CollectedEvent>,
         filteredEventCount: [filtered: number, fromTotal: number]
     } {
         const { events } = this.props.eventsStore;
 
         const filteredEvents = (this.currentSearchFilters.length === 0)
             ? events
-            : events.filter((event) =>
-                this.currentSearchFilters.every((f) => f.matches(event))
-            );
+            : events.filter((event) => {
+                if (event.isHttp() && event.wasTransformed) {
+                    return this.currentSearchFilters.every((f) => f.matches(event.downstream) || f.matches(event.upstream!))
+                } else {
+                    return this.currentSearchFilters.every((f) => f.matches(event))
+                }
+            });
 
         return {
             filteredEvents,
@@ -195,6 +213,23 @@ class ViewPage extends React.Component<ViewPageProps> {
         return _.find(this.props.eventsStore.events, {
             id: this.props.eventId
         });
+    }
+
+    @computed
+    get selectedExchange() {
+        const { contentPerspective } = this.props.uiStore;
+        if (!this.selectedEvent) return undefined;
+        if (!this.selectedEvent.isHttp()) return undefined;
+
+        return contentPerspective === 'client'
+            ? this.selectedEvent.downstream
+        : contentPerspective === 'server'
+            ? (this.selectedEvent.upstream ?? this.selectedEvent.downstream)
+        : contentPerspective === 'original'
+            ? this.selectedEvent.original
+        : contentPerspective === 'transformed'
+            ? this.selectedEvent.transformed
+        : unreachableCheck(contentPerspective)
     }
 
     private readonly contextMenuBuilder = new ViewEventContextMenuBuilder(
@@ -243,26 +278,27 @@ class ViewPage extends React.Component<ViewPageProps> {
             }
 
             const { expandedViewCard } = this.props.uiStore;
-
             if (!expandedViewCard) return;
 
+            const selectedHttpExchange = this.selectedExchange;
+
             // If you have a pane expanded, and select an event with no data
-            // for that pane, then disable the expansion
+            // for that pane, then disable the expansion:
             if (
-                !(selectedEvent.isHttp()) ||
+                !selectedHttpExchange ||
                 (
                     expandedViewCard === 'requestBody' &&
-                    !selectedEvent.hasRequestBody() &&
-                    !selectedEvent.requestBreakpoint
+                    !selectedHttpExchange.hasRequestBody() &&
+                    !selectedHttpExchange.downstream.requestBreakpoint
                 ) ||
                 (
                     expandedViewCard === 'responseBody' &&
-                    !selectedEvent.hasResponseBody() &&
-                    !selectedEvent.responseBreakpoint
+                    !selectedHttpExchange.hasResponseBody() &&
+                    !selectedHttpExchange.downstream.responseBreakpoint
                 ) ||
                 (
                     expandedViewCard === 'webSocketMessages' &&
-                    !(selectedEvent.isWebSocket() && selectedEvent.wasAccepted())
+                    !(selectedHttpExchange.isWebSocket() && selectedHttpExchange.wasAccepted)
                 )
             ) {
                 runInAction(() => {
@@ -286,7 +322,7 @@ class ViewPage extends React.Component<ViewPageProps> {
                     oldFilteredEvents !== newFilteredEvents &&
                     oldFilteredEvents !== this.props.eventsStore.events
                 ) {
-                    oldFilteredEvents.length = 0;
+                    (oldFilteredEvents as CollectedEvent[]).length = 0;
                 }
             })
         );
@@ -306,7 +342,7 @@ class ViewPage extends React.Component<ViewPageProps> {
         let rightPane: JSX.Element | null;
         if (!this.selectedEvent) {
             if (this.splitDirection === 'vertical') {
-                rightPane = <EmptyState key='details' icon={['fas', 'arrow-left']}>
+                rightPane = <EmptyState key='details' icon='ArrowLeft'>
                     Select an exchange to see the full details.
                 </EmptyState>;
             } else {
@@ -314,7 +350,8 @@ class ViewPage extends React.Component<ViewPageProps> {
             }
         } else if (this.selectedEvent.isHttp()) {
             rightPane = <HttpDetailsPane
-                exchange={this.selectedEvent}
+                exchange={this.selectedExchange!}
+                perspective={this.props.uiStore.contentPerspective}
 
                 requestEditor={this.editors.request}
                 responseEditor={this.editors.response}
@@ -370,15 +407,18 @@ class ViewPage extends React.Component<ViewPageProps> {
                 isPaidUser={isPaidUser}
                 selectedEvent={this.selectedEvent}
                 moveSelection={this.moveSelection}
+                onFocusLeft={this.focusLeftPane}
+                onFocusRight={this.focusRightPane}
                 onPin={this.onPin}
                 onResend={this.onPrepareToResendRequest}
-                onMockRequest={this.onBuildRuleFromExchange}
+                onBuildRuleFromExchange={this.onBuildRuleFromExchange}
                 onDelete={this.onDelete}
                 onClear={this.onForceClear}
                 onStartSearch={this.onStartSearch}
             />
 
             <SplitPane
+                ref={this.splitPaneRef}
                 split={this.splitDirection}
                 primary='second'
                 defaultSize='50%'
@@ -386,7 +426,10 @@ class ViewPage extends React.Component<ViewPageProps> {
                 maxSize={-minSize}
                 hiddenPane={rightPane === null ? '2' : undefined}
             >
-                <LeftPane>
+                <LeftPane
+                    aria-label='The collected events list pane'
+                    aria-keyshortcuts={`${AriaCtrlCmd}+[`}
+                >
                     <ViewEventListFooter // Footer above the list to ensure correct tab order
                         searchInputRef={this.searchInputRef}
                         allEvents={events}
@@ -410,11 +453,12 @@ class ViewPage extends React.Component<ViewPageProps> {
                         ref={this.listRef}
                     />
                 </LeftPane>
-                {
-                    rightPane ?? <div />
-                    // The <div/> is hidden by hiddenPane, so does nothing, but avoids
-                    // a React error in react-split-pane for undefined children
-                }
+                <PaneOuterContainer
+                    aria-label='The selected event details pane'
+                    aria-keyshortcuts={`${AriaCtrlCmd}+]`}
+                >
+                    { rightPane }
+                </PaneOuterContainer>
             </SplitPane>
 
             {Object.values(this.editors).map((node, i) =>
@@ -426,6 +470,19 @@ class ViewPage extends React.Component<ViewPageProps> {
             )}
         </div>;
     }
+
+    focusLeftPane = () => {
+        this.listRef.current?.focusList();
+    };
+
+    focusRightPane = () => {
+        const rightPane = this.splitPaneRef.current?.pane2;
+        const firstFocusableElem = rightPane?.querySelector(
+            '[tabindex]:not([tabindex="-1"])'
+        ) as HTMLElement | null;
+
+        firstFocusableElem?.focus();
+    };
 
     @action.bound
     onSearchFiltersConsidered(filters: FilterSet | undefined) {
@@ -469,18 +526,18 @@ class ViewPage extends React.Component<ViewPageProps> {
     }
 
     @action.bound
-    onBuildRuleFromExchange(exchange: HttpExchange) {
+    onBuildRuleFromExchange(exchange: HttpExchangeView) {
         const { rulesStore, navigate } = this.props;
 
         if (!this.props.accountStore!.isPaidUser) return;
 
         const rule = buildRuleFromExchange(exchange);
         rulesStore!.draftRules.items.unshift(rule);
-        navigate(`/mock/${rule.id}`);
+        navigate(`/modify/${rule.id}`);
     }
 
     @action.bound
-    async onPrepareToResendRequest(exchange: HttpExchange) {
+    async onPrepareToResendRequest(exchange: HttpExchangeView) {
         const { sendStore, navigate } = this.props;
 
         if (!this.props.accountStore!.isPaidUser) return;
@@ -524,9 +581,9 @@ class ViewPage extends React.Component<ViewPageProps> {
     @action.bound
     onClear(confirmRequired = true) {
         const { events } = this.props.eventsStore;
-        const someEventsPinned = _.some(events, { pinned: true });
+        const someEventsPinned = events.some(e => e.pinned === true);
         const allEventsPinned = events.length > 0 &&
-            _.every(events, { pinned: true });
+            events.every(e => e.pinned === true);
 
         if (allEventsPinned) {
             // We always confirm deletion of pinned exchanges:

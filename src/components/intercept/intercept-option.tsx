@@ -66,7 +66,7 @@ const BackgroundIcons = styled.div`
     bottom: -10px;
     right: -10px;
     z-index: 0;
-    opacity: 0.2;
+    opacity: 0.3;
 
     > svg {
         &:not(:first-child) {
@@ -240,6 +240,8 @@ export class InterceptOption extends React.Component<InterceptOptionProps> {
             expanded={expanded}
             uiConfig={uiConfig}
             gridWidth={gridWidth}
+
+            data-interceptor-id={interceptor.id}
 
             role={!this.expanded ? 'button' : 'section'}
             aria-expanded={isExpandable

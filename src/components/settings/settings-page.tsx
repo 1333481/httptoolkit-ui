@@ -3,13 +3,14 @@ import * as React from 'react';
 import { observer, inject } from "mobx-react";
 import * as dedent from 'dedent';
 import {
-    distanceInWordsStrict, distanceInWordsToNow, format
+    distanceInWordsStrict, distanceInWordsToNow, format, isFuture
 } from 'date-fns';
 import { SubscriptionPlans } from '@httptoolkit/accounts';
 
 import { WithInjected } from '../../types';
 import { styled, Theme, ThemeName } from '../../styles';
 import { Icon, WarningIcon } from '../../icons';
+import { uploadFile } from '../../util/ui';
 
 import { AccountStore } from '../../model/account/account-store';
 import { UiStore } from '../../model/ui/ui-store';
@@ -59,6 +60,7 @@ const SettingPageContainer = styled.section`
 
 const SettingsHeading = styled.h1`
     font-size: ${p => p.theme.loudHeadingSize};
+    font-family: ${p => p.theme.titleTextFamily};
     font-weight: bold;
     margin-bottom: 40px;
 `;
@@ -178,7 +180,9 @@ class SettingsPage extends React.Component<SettingsPageProps> {
                                             If retried payments fail your subscription will be cancelled.
                                         `}
                                     >Past due <WarningIcon /></strong>,
-                                    'deleted': 'Cancelled'
+                                    'deleted': sub.expiry && isFuture(sub.expiry)
+                                        ? `Active (until ${sub.expiry.toLocaleDateString()})`
+                                        : 'Cancelled'
                                 }[sub.status]) || 'Unknown'
                             }
                             { isAccountUpdateInProcess &&
@@ -192,10 +196,10 @@ class SettingsPage extends React.Component<SettingsPageProps> {
                         <ContentValue>
                             {
                                 subscriptionPlans.state === 'fulfilled'
-                                ? (subscriptionPlans.value as SubscriptionPlans)[sub.plan]?.name
+                                ? (subscriptionPlans.value as SubscriptionPlans)[sub.sku]?.name
                                 // If the accounts API is unavailable for plan metadata for some reason, we can just
                                 // format the raw SKU to get something workable, no worries:
-                                : _.startCase(sub.plan)
+                                : _.startCase(sub.sku)
                             }
                         </ContentValue>
 
@@ -289,38 +293,53 @@ class SettingsPage extends React.Component<SettingsPageProps> {
                         </header>
                         <TabbedOptionsContainer>
                             <TabsContainer
-                                onClick={(value: ThemeName | 'automatic' | Theme) => uiStore.setTheme(value)}
-                                isSelected={(value: ThemeName | 'automatic' | Theme) => {
-                                    if (typeof value === 'string') {
-                                        return uiStore.themeName === value;
+                                onClick={async (value: ThemeName | 'automatic' | 'custom') => {
+                                    if (value === 'custom') {
+                                        const themeFile = await uploadFile('text', ['.htktheme', '.htk-theme', '.json']);
+                                        if (!themeFile) return;
+                                        try {
+                                            const customTheme = uiStore.buildCustomTheme(themeFile);
+                                            uiStore.setTheme(customTheme);
+                                        } catch (e: any) {
+                                            alert(e.message || e);
+                                        }
                                     } else {
-                                        return _.isEqual(value, uiStore.theme);
+                                        uiStore.setTheme(value);
                                     }
                                 }}
+                                isSelected={(value: ThemeName | 'automatic' | 'custom') =>
+                                    uiStore.themeName === value
+                                }
                             >
                                 <Tab
-                                    icon={['fas', 'magic']}
+                                    icon='MagicWand'
                                     value='automatic'
                                 >
                                     Automatic
                                 </Tab>
                                 <Tab
-                                    icon={['fas', 'sun']}
+                                    icon='Sun'
                                     value='light'
                                 >
                                     Light
                                 </Tab>
                                 <Tab
-                                    icon={['fas', 'moon']}
+                                    icon='Moon'
                                     value='dark'
                                 >
                                     Dark
                                 </Tab>
                                 <Tab
-                                    icon={['fas', 'adjust']}
+                                    icon='CircleHalf'
                                     value='high-contrast'
                                 >
                                     High Contrast
+                                </Tab>
+                                <Tab
+                                    icon='Swatches'
+                                    value='custom'
+                                >
+                                    Custom
                                 </Tab>
                             </TabsContainer>
                             <ThemeColors>
@@ -356,7 +375,7 @@ class SettingsPage extends React.Component<SettingsPageProps> {
             throw new Error("Can't cancel without a subscription");
         }
 
-        const planName = SubscriptionPlans[subscription.plan].name;
+        const planName = SubscriptionPlans[subscription.sku].name;
 
         let cancelEffect: string;
 

@@ -3,7 +3,7 @@ import * as React from 'react';
 import { observer } from 'mobx-react';
 import { get } from 'typesafe-get';
 
-import { HtkResponse, Omit } from '../../../types';
+import { HtkResponse, HttpVersion } from '../../../types';
 import { Theme } from '../../../styles';
 
 import { ApiExchange } from '../../../model/api/api-interfaces';
@@ -34,7 +34,7 @@ import { DocsLink } from '../../common/docs-link';
 
 interface HttpResponseCardProps extends CollapsibleCardProps  {
     theme: Theme;
-    httpVersion: 1 | 2;
+    httpVersion: HttpVersion;
     requestUrl: URL;
     response: HtkResponse;
     apiExchange: ApiExchange | undefined;
@@ -71,7 +71,7 @@ export const HttpResponseCard = observer((props: HttpResponseCardProps) => {
         </header>
 
         <div>
-            <CollapsibleSection>
+            <CollapsibleSection contentName='status details'>
                 <CollapsibleSectionSummary>
                     <ContentLabel>Status:</ContentLabel>{' '}
                     {response.statusCode} {response.statusMessage || getStatusMessage(response.statusCode)}

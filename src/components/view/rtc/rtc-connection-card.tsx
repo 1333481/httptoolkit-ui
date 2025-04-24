@@ -8,9 +8,11 @@ import * as React from 'react';
 import { computed } from 'mobx';
 import { observer } from 'mobx-react';
 
+import { styled } from '../../../styles';
+
 import { UNKNOWN_SOURCE } from '../../../model/http/sources';
 import { RTCConnection } from '../../../model/webrtc/rtc-connection';
-import { getSummaryColour } from '../../../model/events/categorization';
+import { getSummaryColor } from '../../../model/events/categorization';
 
 import {
     CollapsibleCard,
@@ -36,6 +38,11 @@ interface RTCConnectionCardProps extends ExpandableCardProps {
     connection: RTCConnection;
     onCollapseToggled?: () => void;
 };
+
+// Approx matches the spacing of collabsible sections:
+const ContentLabelPair = styled.div`
+    padding: 3px 0 12px 0;
+`;
 
 @observer
 export class RTCConnectionCard extends React.Component<RTCConnectionCardProps> {
@@ -70,15 +77,15 @@ export class RTCConnectionCard extends React.Component<RTCConnectionCardProps> {
                 <SourceIcon source={connection.source} />
 
                 { this.hasData &&
-                    <Pill color={getSummaryColour('data')}>Data</Pill>
+                    <Pill color={getSummaryColor('data')}>Data</Pill>
                 }
 
                 { this.hasVideo &&
-                    <Pill color={getSummaryColour('image')}>Video</Pill>
+                    <Pill color={getSummaryColor('image')}>Video</Pill>
                 }
 
                 { this.hasAudio &&
-                    <Pill color={getSummaryColour('css')}>Audio</Pill>
+                    <Pill color={getSummaryColor('css')}>Audio</Pill>
                 }
 
                 <CollapsibleCardHeading onCollapseToggled={cardProps.onCollapseToggled}>
@@ -86,44 +93,38 @@ export class RTCConnectionCard extends React.Component<RTCConnectionCardProps> {
                 </CollapsibleCardHeading>
             </header>
 
-            <CollapsibleSection>
-                <CollapsibleSectionSummary>
-                    <ContentLabel>Connection type: </ContentLabel>
-                    <ContentValue>
-                        {
-                            connection.remoteCandidate.type === 'host'
-                                ? 'Direct'
-                            : connection.remoteCandidate.type === 'relay'
-                                ? 'TURN-relayed'
-                            : connection.remoteCandidate.type === 'srflx'
-                                ? 'STUN-directed'
-                            : // === prflx
-                                'Peer-reflexive'
-                        } {
-                            connection.remoteCandidate.protocol.toUpperCase()
-                        }
-                    </ContentValue>
-                </CollapsibleSectionSummary>
-            </CollapsibleSection>
+            <ContentLabelPair>
+                <ContentLabel>Connection type: </ContentLabel>
+                <ContentValue>
+                    {
+                        connection.remoteCandidate.type === 'host'
+                            ? 'Direct'
+                        : connection.remoteCandidate.type === 'relay'
+                            ? 'TURN-relayed'
+                        : connection.remoteCandidate.type === 'srflx'
+                            ? 'STUN-directed'
+                        : // === prflx
+                            'Peer-reflexive'
+                    } {
+                        connection.remoteCandidate.protocol.toUpperCase()
+                    }
+                </ContentValue>
+            </ContentLabelPair>
 
-            <CollapsibleSection>
-                <CollapsibleSectionSummary>
-                    <ContentLabel>From: </ContentLabel>
-                    <ContentMonoValueInline>{ connection.clientURL }</ContentMonoValueInline>
-                </CollapsibleSectionSummary>
-            </CollapsibleSection>
+            <ContentLabelPair>
+                <ContentLabel>From: </ContentLabel>
+                <ContentMonoValueInline>{ connection.clientURL }</ContentMonoValueInline>
+            </ContentLabelPair>
 
-            <CollapsibleSection>
-                <CollapsibleSectionSummary>
-                    <ContentLabel>To: </ContentLabel>
-                    <ContentMonoValueInline>{ connection.remoteURL }</ContentMonoValueInline>
-                </CollapsibleSectionSummary>
-            </CollapsibleSection>
+            <ContentLabelPair>
+                <ContentLabel>To: </ContentLabel>
+                <ContentMonoValueInline>{ connection.remoteURL }</ContentMonoValueInline>
+            </ContentLabelPair>
 
             { connection.sourceURL && <>
                 <ContentLabelBlock>Source page: </ContentLabelBlock>
 
-                <CollapsibleSection prefixTrigger={true}>
+                <CollapsibleSection contentName='URL components' prefixTrigger={true}>
                     <CollapsibleSectionSummary>
                         <ContentMonoValueInline>
                             { connection.sourceURL.toString() }
@@ -139,7 +140,7 @@ export class RTCConnectionCard extends React.Component<RTCConnectionCardProps> {
             { connection.source !== UNKNOWN_SOURCE && <>
                 <ContentLabelBlock>Client: </ContentLabelBlock>
 
-                <CollapsibleSection prefixTrigger={true}>
+                <CollapsibleSection contentName='source details' prefixTrigger={true}>
                     <CollapsibleSectionSummary>
                         <ContentMonoValueInline>
                             { connection.source.ua }

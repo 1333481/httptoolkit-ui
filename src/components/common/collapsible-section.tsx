@@ -12,6 +12,7 @@ interface CollapsibleSectionProps {
     className?: string;
     withinGrid?: boolean;
     prefixTrigger?: boolean;
+    contentName: string;
 }
 
 const CollapsibleSectionWrapper = styled.section`
@@ -64,6 +65,9 @@ const SummaryAsSpacer = styled.div`
 @observer
 export class CollapsibleSection extends React.Component<CollapsibleSectionProps> {
 
+    static idCounter = 0;
+    id = `collapsible-${CollapsibleSection.idCounter++}`;
+
     @observable
     open = false;
 
@@ -89,12 +93,15 @@ export class CollapsibleSection extends React.Component<CollapsibleSectionProps>
         // Undefined (if !hasBody) or a proper React element. Only really necessary
         // to make the types here a bit clearer.
         const bodyElement = (sectionBody as React.ReactElement);
+        const bodyId = this.id + '-body';
 
         const trigger = <CollapsibleTrigger
             open={this.open}
             canOpen={hasBody}
             withinGrid={withinGrid}
             onClick={this.toggleOpen}
+            targetId={bodyId}
+            targetName={this.props.contentName}
         />;
 
         const summary = React.cloneElement(
@@ -120,7 +127,7 @@ export class CollapsibleSection extends React.Component<CollapsibleSectionProps>
 
         const body = hasBody && this.open ? React.cloneElement(
             bodyElement,
-            { withinGrid },
+            { withinGrid, id: bodyId },
             withinGrid ?
                 // Grid body is a simple full width block
                 bodyElement.props.children
@@ -128,7 +135,7 @@ export class CollapsibleSection extends React.Component<CollapsibleSectionProps>
                 // Non-grid body copies the summary (invisibly), to allow content to
                 // wrap around the summary into the wraparound section.
                 <>
-                    <SummaryAsSpacer>{ summary }</SummaryAsSpacer>
+                    <SummaryAsSpacer aria-hidden='true'>{ summary }</SummaryAsSpacer>
                     { bodyElement.props.children }
                 </>
         ) : null;
@@ -150,12 +157,20 @@ const OPEN_ICON: IconProp = ['fas', 'minus'];
 const CLOSED_ICON: IconProp = ['fas', 'plus'];
 
 const CollapsibleTrigger = styled((p: {
+    targetName: string,
+    targetId: string,
     open: boolean,
     canOpen: boolean,
     withinGrid: boolean,
     onClick: (e: React.SyntheticEvent) => void
 }) =>
-    <button {..._.omit(p, ['open', 'canOpen', 'withinGrid'])}>
+    <button
+        aria-hidden={!p.canOpen}
+        aria-label={`${p.open ? 'Hide' : 'Show'} ${p.targetName}`}
+        aria-expanded={p.open}
+        aria-controls={p.targetId}
+        {..._.omit(p, ['open', 'canOpen', 'withinGrid', 'targetName', 'targetId'])}
+    >
         <Icon icon={p.open ? OPEN_ICON : CLOSED_ICON} />
     </button>
 )`

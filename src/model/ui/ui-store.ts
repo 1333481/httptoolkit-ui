@@ -16,6 +16,7 @@ import {
     ContextMenuOption,
     buildNativeContextMenuItems
 } from './context-menu';
+import { tryParseJson } from '../../util';
 
 const VIEW_CARD_KEYS = [
     'api',
@@ -63,6 +64,12 @@ const isSendRequestCard = (key: SendCardKey): key is 'requestHeaders' | 'request
 const isSentResponseCard = (key: SendCardKey): key is 'responseHeaders' | 'responseBody' =>
     key.startsWith('response');
 
+export type ContentPerspective =
+    | 'client' // What did the client send (original) & receive (after transform)
+    | 'server' // What did the server receive (after transform) & send (original)?
+    | 'transformed' // What was the request & resposne after both transforms?
+    | 'original' // What was the request & response before transforms?
+
 const SEND_REQUEST_CARD_KEYS = SEND_CARD_KEYS.filter(isSendRequestCard);
 const SENT_RESPONSE_CARD_KEYS = SEND_CARD_KEYS.filter(isSentResponseCard);
 
@@ -93,6 +100,11 @@ const SETTINGS_CARD_KEYS =[
 ] as const;
 type SettingsCardKey = typeof SETTINGS_CARD_KEYS[number];
 
+type CustomTheme = Partial<Theme> & {
+    name: string;
+    extends: ThemeName;
+};
+
 export class UiStore {
 
     constructor(
@@ -117,7 +129,7 @@ export class UiStore {
         // closed), but don't get reset when the app starts with stale account data.
         observe(this.accountStore, 'accountDataLastUpdated', () => {
             if (!this.accountStore.isPaidUser) {
-                this.setTheme('light');
+                this.setTheme('automatic');
             }
         });
 
@@ -146,8 +158,27 @@ export class UiStore {
         }
     }
 
+    buildCustomTheme(themeFile: string) {
+        const themeData: Partial<CustomTheme> | undefined = tryParseJson(themeFile);
+        if (!themeData) throw new Error("Could not parse theme JSON");
+
+        if (!themeData.name) throw new Error('Theme must contain a `name` field');
+        if (
+            !themeData.extends ||
+            Themes[themeData.extends as ThemeName] === undefined
+        ) {
+            throw new Error('Theme must contain an `extends` field with a built-in theme name (dark/light/high-contrast)');
+        }
+
+        const baseTheme = Themes[themeData.extends];
+        return {
+            ...baseTheme,
+            ...themeData
+        } as Theme;
+    }
+
     @persist @observable
-    private _themeName: ThemeName | 'automatic' | 'custom' = 'light';
+    private _themeName: ThemeName | 'automatic' | 'custom' = 'automatic';
 
     get themeName() {
         return this._themeName;
@@ -184,6 +215,14 @@ export class UiStore {
     // applied, not always (to avoid animating expanded cards when they're rendered e.g. when selecting a request).
     @observable
     private animatedExpansionCard: string | undefined;
+
+    /**
+     * For both requests & responses, there are two different ways to look at them (=4 perspectives in total). It
+     * depends on the use case (mostly: are you collecting data, or exploring behaviours) but this field changes which
+     * format is shown in the right-hand UI pane. Note that the list view always still shows the original values.
+     */
+    @observable
+    contentPerspective: ContentPerspective = 'transformed';
 
     // Store the view details cards state here, so that they persist
     // when moving away from the page or deselecting all traffic.
@@ -356,7 +395,6 @@ export class UiStore {
     toggleSettingsCardCollapsed(key: SettingsCardKey) {
         const cardState = this.settingsCardStates[key];
         cardState.collapsed = !cardState.collapsed;
-        this.expandedViewCard = undefined;
     }
 
     @action.bound

@@ -7,8 +7,8 @@ import {
     distanceInWordsStrict
 } from 'date-fns';
 
-import { HttpExchange, ExchangeMessage } from '../../types';
-import { lastHeader, asHeaderArray } from '../../util/headers';
+import { ExchangeMessage, HttpExchangeView } from '../../types';
+import { getHeaderValue, asHeaderArray } from '../../util/headers';
 import { joinAnd } from '../../util/text';
 import { escapeForMarkdownEmbedding } from '../ui/markdown';
 
@@ -92,7 +92,7 @@ function parseCCDirectives(message: ExchangeMessage): {
         }, {});
 }
 
-export function explainCacheability(exchange: HttpExchange): (
+export function explainCacheability(exchange: HttpExchangeView): (
     Explanation & { cacheable: boolean }
 ) | undefined {
     const { request, response } = exchange;
@@ -106,7 +106,7 @@ export function explainCacheability(exchange: HttpExchange): (
             // This is a CORS preflight request - it's not really cacheable, but the CORS
             // headers specifically (probably the only interesting bit) are, via their
             // own separate funky mechanism.
-            const maxAgeHeader = lastHeader(response.headers['access-control-max-age']);
+            const maxAgeHeader = getHeaderValue(response.headers, 'access-control-max-age');
             const maxAge = maxAgeHeader ? parseInt(maxAgeHeader, 10) : undefined;
 
             if (maxAge !== undefined && maxAge >= 1) {
@@ -167,7 +167,7 @@ export function explainCacheability(exchange: HttpExchange): (
     const revalidationSuggestion =
         !hasRevalidationOptions &&
         // Revalidation makes no sense without a body
-        response.body.encoded.byteLength &&
+        response.body.encodedByteLength &&
         !responseCCDirectives['immutable'] ?
         dedent`
             :suggestion: This response doesn't however include any validation headers. That
@@ -238,7 +238,7 @@ export function explainCacheability(exchange: HttpExchange): (
         `;
 
         const contentLocationUrl = response.headers['content-location'] ?
-            new URL(lastHeader(response.headers['content-location']!), request.url) : undefined;
+            new URL(getHeaderValue(response.headers, 'content-location')!, request.url) : undefined;
 
         const hasFreshnessInfo =
             !!responseCCDirectives['max-age'] ||
@@ -272,7 +272,7 @@ export function explainCacheability(exchange: HttpExchange): (
         let warning: string | undefined;
 
         const responseDateHeader = response.headers['date'] ?
-            parseDate(lastHeader(response.headers['date'])!)
+            parseDate(getHeaderValue(response.headers, 'date')!)
             : undefined;
 
         if (!responseDateHeader) {
@@ -287,7 +287,7 @@ export function explainCacheability(exchange: HttpExchange): (
                 predictably.
             `;
         } else if (response.headers['expires'] && Math.abs(differenceInSeconds(
-            parseDate(lastHeader(response.headers['expires']!)),
+            parseDate(getHeaderValue(response.headers, 'expires')!),
             addSeconds(responseDateHeader, responseCCDirectives['max-age'])
         )) > 60) {
             warning = dedent`
@@ -318,7 +318,7 @@ export function explainCacheability(exchange: HttpExchange): (
         };
     }
 
-    if (lastHeader(response.headers['expires']) !== undefined) {
+    if (getHeaderValue(response.headers, 'expires') !== undefined) {
         // Expires set, but not max-age (checked above).
         return {
             cacheable: true,
@@ -455,7 +455,7 @@ const SHARED_ONLY = 'May only be cached in shared caches';
  * and why. This assumes that explainCacheability has returned cacheability: true,
  * and doesn't fully repeat the checks included there.
  */
-export function explainValidCacheTypes(exchange: HttpExchange): Explanation | undefined {
+export function explainValidCacheTypes(exchange: HttpExchangeView): Explanation | undefined {
     const { request, response } = exchange;
     if (typeof response !== 'object') return;
 
@@ -547,7 +547,7 @@ export function explainValidCacheTypes(exchange: HttpExchange): Explanation | un
  * This assumes that explainCacheability has returned cacheability: true,
  * so doesn't fully repeat the checks included there.
  */
-export function explainCacheMatching(exchange: HttpExchange): Explanation | undefined {
+export function explainCacheMatching(exchange: HttpExchangeView): Explanation | undefined {
     const { request, response } = exchange;
     if (typeof response !== 'object') return;
 
@@ -642,14 +642,14 @@ export function explainCacheMatching(exchange: HttpExchange): Explanation | unde
  * This assumes that explainCacheability has returned cacheability: true,
  * so doesn't fully repeat the checks included there.
  */
-export function explainCacheLifetime(exchange: HttpExchange): Explanation | undefined {
+export function explainCacheLifetime(exchange: HttpExchangeView): Explanation | undefined {
     const { request, response } = exchange;
     if (typeof response !== 'object') return;
 
     const responseCCDirectives = parseCCDirectives(response);
 
     if (request.method === 'OPTIONS') {
-        const maxAgeHeader = lastHeader(response.headers['access-control-max-age']);
+        const maxAgeHeader = getHeaderValue(response.headers, 'access-control-max-age');
 
         if (maxAgeHeader) {
             const maxAge = parseInt(maxAgeHeader!, 10);
@@ -694,8 +694,8 @@ export function explainCacheLifetime(exchange: HttpExchange): Explanation | unde
         };
     }
 
-    const dateHeader = lastHeader(response.headers['date']);
-    const expiresHeader = lastHeader(response.headers['expires']);
+    const dateHeader = getHeaderValue(response.headers, 'date');
+    const expiresHeader = getHeaderValue(response.headers, 'expires');
     const maxAge = responseCCDirectives['max-age'];
     const sharedMaxAge = responseCCDirectives['s-maxage'] !== undefined ?
         responseCCDirectives['s-maxage'] : maxAge;

@@ -14,7 +14,7 @@ jobs:
       # Install Node
       - uses: actions/setup-node@v4
         with:
-          node-version: 20.8.0
+          node-version: 20.18.1
           cache: 'npm'
 
       # Install & build & test:
@@ -60,7 +60,7 @@ jobs:
       # Install Node
       - uses: actions/setup-node@v4
         with:
-          node-version: 20.8.0
+          node-version: 20.18.1
           cache: 'npm'
 
       # Install & unit test & build
@@ -118,11 +118,10 @@ jobs:
     name: Deploy to Scaleway
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    container: httptoolkit/act-build-base
     needs: publish-docker
     steps:
       - name: Redeploy container
-        uses: thibaultchazal/scaleway-serverless-container-deploy-action@0d290edda0c3359e51442bd8bf730eafef4e290f
+        uses: httptoolkit/scaleway-serverless-container-deploy-action@v1
         with:
           container_id: ${{ vars.SCW_API_CONTAINER_ID }}
           region: ${{ vars.SCW_API_CONTAINER_REGION }}
@@ -130,7 +129,7 @@ jobs:
           registry_image_url: "registry.hub.docker.com/httptoolkit/ui:prod"
 
       - name: Redeploy failover container
-        uses: thibaultchazal/scaleway-serverless-container-deploy-action@0d290edda0c3359e51442bd8bf730eafef4e290f
+        uses: httptoolkit/scaleway-serverless-container-deploy-action@v1
         with:
           container_id: ${{ vars.SCW_FAILOVER_API_CONTAINER_ID }}
           region: ${{ vars.SCW_FAILOVER_API_CONTAINER_REGION }}
@@ -139,9 +138,6 @@ jobs:
 
       - name: Flush CDN cache
         run: |
-          # Wait a little - the reploy commands don't wait for the container to start up
-          sleep 30
-
           # Clear CDN cache to re-request content:
           curl -f --request POST \
             --url https://api.bunny.net/pullzone/$PULL_ZONE_ID/purgeCache \

@@ -1,48 +1,34 @@
 import * as _ from 'lodash';
-import { observable, computed, action, runInAction, when } from 'mobx';
+import { observable, computed, action, runInAction, when, autorun } from 'mobx';
 
 import {
+    HttpExchangeView,
     HtkRequest,
     HtkResponse,
-    Headers,
-    MessageBody,
     InputRequest,
     InputResponse,
     InputFailedRequest,
     TimingEvents,
-    InputMessage,
     MockttpBreakpointedRequest,
     MockttpBreakpointedResponse,
     InputCompletedRequest,
     MockttpBreakpointResponseResult,
+    InputRuleEventDataMap
 } from "../../types";
-import {
-    fakeBuffer,
-    FakeBuffer,
-    stringToBuffer,
-} from '../../util/buffer';
-import { UnreachableCheck } from '../../util/error';
-import { lazyObservablePromise, ObservablePromise, observablePromise } from "../../util/observable";
-import {
-    asHeaderArray,
-    lastHeader
-} from '../../util/headers';
+import { getHeaderValue } from '../../util/headers';
+import { ParsedUrl } from '../../util/url';
 
-import { logError } from '../../errors';
 
 import { MANUALLY_SENT_SOURCE, parseSource } from './sources';
 import { getContentType } from '../events/content-types';
 import { HTKEventBase } from '../events/event-base';
 
-import { HandlerClassKey, HtkMockRule, getRulePartKey } from '../rules/rules';
+import { HandlerClassKey, HtkRule, getRulePartKey } from '../rules/rules';
 
 import { ApiStore } from '../api/api-store';
-import { ApiExchange } from '../api/api-interfaces';
-import { OpenApiExchange } from '../api/openapi';
-import { parseRpcApiExchange } from '../api/jsonrpc';
-import { ApiMetadata } from '../api/api-interfaces';
+import { ApiDetector } from './api-detector';
 
-import { decodeBody } from '../../services/ui-worker-api';
+import { HttpBody } from './http-body';
 import {
     RequestBreakpoint,
     ResponseBreakpoint,
@@ -50,8 +36,31 @@ import {
     getResponseBreakpoint,
     getDummyResponseBreakpoint
 } from './exchange-breakpoint';
+import { UpstreamHttpExchange } from './upstream-exchange';
+import {
+    CompletedExchange,
+    CompletedRequest,
+    HttpExchangeOriginalView,
+    HttpExchangeTransformedView,
+    SuccessfulExchange
+} from './http-exchange-views';
+import { ObservableCache } from '../observable-cache';
 
-function tryParseUrl(request: InputRequest): (URL & { parseable: true }) | undefined  {
+const HTTP_VERSIONS = [0.9, 1.0, 1.1, 2.0, 3.0] as const;
+export type HttpVersion = typeof HTTP_VERSIONS[number];
+
+export function parseHttpVersion(version: string | undefined): HttpVersion {
+    if (version === '0.9') return 0.9;
+    if (version === '1.0' || version === '1') return 1.0;
+    if (version === '1.1') return 1.1;
+    if (version === '2.0' || version === '2') return 2.0;
+    if (version === '3.0' || version === '3') return 3.0;
+
+    console.log('Unknown HTTP version:', version);
+    return 1.1;
+}
+
+function tryParseUrl(request: InputRequest): ParsedUrl | undefined  {
     try {
         return Object.assign(
             new URL(request.url, `${request.protocol}://${request.hostname || 'unknown.invalid'}`),
@@ -64,7 +73,7 @@ function tryParseUrl(request: InputRequest): (URL & { parseable: true }) | undef
     }
 }
 
-function getFallbackUrl(request: InputRequest): URL & { parseable: false } {
+function getFallbackUrl(request: InputRequest): ParsedUrl {
     try {
         return Object.assign(
             new URL("/[unparseable]", `${request.protocol}://${request.hostname || 'unknown.invalid'}`),
@@ -86,8 +95,8 @@ function addRequestMetadata(request: InputRequest): HtkRequest {
                 ? MANUALLY_SENT_SOURCE
                 : parseSource(request.headers['user-agent']),
             body: new HttpBody(request, request.headers),
-            contentType: getContentType(lastHeader(request.headers['content-type'])) || 'text',
-            cache: observable.map(new Map<symbol, unknown>(), { deep: false })
+            contentType: getContentType(getHeaderValue(request.headers, 'content-type')) || 'text',
+            cache: new ObservableCache()
         }) as HtkRequest;
     } catch (e) {
         console.log(`Failed to parse request for ${request.url} (${request.protocol}://${request.hostname})`);
@@ -98,103 +107,18 @@ function addRequestMetadata(request: InputRequest): HtkRequest {
 function addResponseMetadata(response: InputResponse): HtkResponse {
     return Object.assign(response, {
         body: new HttpBody(response, response.headers),
-        contentType: getContentType(
-            // There should only ever be one. If we get multiple though, just use the last.
-            lastHeader(response.headers['content-type'])
-        ) || 'text',
-        cache: observable.map(new Map<symbol, unknown>(), { deep: false })
+        contentType: getContentType(getHeaderValue(response.headers, 'content-type')) || 'text',
+        cache: new ObservableCache()
     }) as HtkResponse;
 }
 
-export class HttpBody implements MessageBody {
+
+export class HttpExchange extends HTKEventBase implements HttpExchangeView {
 
     constructor(
-        message: InputMessage,
-        headers: Headers
+        request: InputRequest,
+        protected readonly apiStore: ApiStore
     ) {
-        if (!('body' in message) || !message.body) {
-            this._encoded = stringToBuffer("");
-        } else if ('buffer' in message.body) {
-            this._encoded = message.body.buffer;
-        } else {
-            this._encoded = fakeBuffer(message.body.encodedLength);
-            this._decoded = message.body.decoded;
-        }
-
-        this._contentEncoding = asHeaderArray(headers['content-encoding']);
-    }
-
-    private _contentEncoding: string[];
-    private _encoded: FakeBuffer | Buffer;
-    get encoded() {
-        return this._encoded;
-    }
-
-    private _decoded: Buffer | undefined;
-
-    @observable
-    decodingError: Error | undefined;
-
-    decodedPromise: ObservablePromise<Buffer | undefined> = lazyObservablePromise(async () => {
-        // Exactly one of _encoded & _decoded is a buffer, never neither/both.
-        if (this._decoded) return this._decoded;
-        const encodedBuffer = this.encoded as Buffer;
-
-        // Temporarily change to a fake buffer, while the web worker takes the data to decode
-        const encodedLength = encodedBuffer.byteLength;
-        this._encoded = fakeBuffer(encodedLength);
-
-        try {
-            const { decoded, encoded } = await decodeBody(encodedBuffer, this._contentEncoding);
-            this._encoded = encoded;
-            return decoded;
-        } catch (e: any) {
-            logError(e);
-
-            // In most cases, we get the encoded data back regardless, so recapture it here:
-            if (e.inputBuffer) {
-                this._encoded = e.inputBuffer;
-            }
-            runInAction(() => {
-                this.decodingError = e;
-            });
-
-            return undefined;
-        }
-    });
-
-    get decoded() {
-        // We exclude 'Error' from the value - errors should always become undefined
-        return this.decodedPromise.value as Buffer | undefined;
-    }
-
-    // Must only be called when the exchange & body will no longer be used. Ensures that large data is
-    // definitively unlinked, since some browser issues can result in exchanges not GCing immediately.
-    // Important: for safety, this leaves the body in a *VALID* but reset state - not a totally blank one.
-    cleanup() {
-        const emptyBuffer = Buffer.from([]);
-
-        // Set to a valid state for an un-decoded but totally empty body.
-        this._decoded = undefined;
-        this._encoded = emptyBuffer;
-        this.decodingError = undefined;
-        this.decodedPromise = observablePromise(Promise.resolve(emptyBuffer));
-    }
-}
-
-export type CompletedRequest = Omit<HttpExchange, 'request'> & {
-    matchedRule: { id: string, handlerRype: HandlerClassKey } | false
-};
-export type CompletedExchange = Omit<HttpExchange, 'response'> & {
-    response: HtkResponse | 'aborted'
-};
-export type SuccessfulExchange = Omit<HttpExchange, 'response'> & {
-    response: HtkResponse
-};
-
-export class HttpExchange extends HTKEventBase {
-
-    constructor(apiStore: ApiStore, request: InputRequest) {
         super();
 
         this.request = addRequestMetadata(request);
@@ -217,11 +141,57 @@ export class HttpExchange extends HTKEventBase {
         .toLowerCase();
 
         // Start loading the relevant Open API specs for this request, if any.
-        this._apiMetadataPromise = apiStore.getApi(this.request);
+        this._apiDetector = new ApiDetector(this, apiStore);
     }
 
-    public readonly request: HtkRequest;
     public readonly id: string;
+
+    public readonly request: HtkRequest;
+
+    public readonly downstream = this;
+
+    @observable
+    public upstream: UpstreamHttpExchange | undefined;
+
+    // These are the same as HttpExchangeViewBase, but need to be copied here (because we're not a _view_,
+    // we're original, and TS has no proper mixin support).
+    @computed
+    get original(): HttpExchangeView {
+        if (!this.upstream) return this;
+
+        // If the request is original, then upstream data matches original data
+        // I.e. only possible transform was after all upstream data
+        if (!this.upstream.wasRequestTransformed) {
+            return this.upstream;
+        } else {
+            return new HttpExchangeOriginalView(this.downstream, this.apiStore);
+        }
+    }
+
+    @computed
+    get transformed(): HttpExchangeView {
+        if (!this.upstream) return this;
+
+        // If the response is original, then upstream data matches transformed data
+        // I.e. all transforms happened before any upstream data
+        if (!this.upstream?.wasResponseTransformed) {
+            return this.upstream;
+        } else {
+            return new HttpExchangeTransformedView(this.downstream, this.apiStore);
+        }
+    }
+
+    @computed
+    get wasTransformed() {
+        if (!this.upstream) return false;
+        return this.upstream.wasTransformed;
+    }
+
+    // An autorun, which ensures the transformed & original views are kept observed & updated, for as long
+    // as this upstream exchange exists (until cleanup);
+    private computedKeepAlive = {
+        dispose: autorun(() => { this.original; this.transformed; })
+    };
 
     @observable
     // Undefined initially, defined for completed requests, false for 'not available'
@@ -235,7 +205,7 @@ export class HttpExchange extends HTKEventBase {
 
     @computed
     get httpVersion() {
-        return this.request.httpVersion === '2.0' ? 2 : 1;
+        return parseHttpVersion(this.request.httpVersion);
     }
 
     isHttp(): this is HttpExchange {
@@ -255,16 +225,16 @@ export class HttpExchange extends HTKEventBase {
     }
 
     hasRequestBody(): this is CompletedRequest {
-        return this.isCompletedRequest() && this.request.body.encoded.byteLength > 0;
+        return this.isCompletedRequest() && this.request.body.encodedByteLength > 0;
     }
 
     hasResponseBody(): this is SuccessfulExchange {
         return this.isSuccessfulExchange() &&
-            (this.response as HtkResponse).body.encoded.byteLength > 0;
+            (this.response as HtkResponse).body.encodedByteLength > 0;
     }
 
     @observable
-    public readonly timingEvents: Partial<TimingEvents>; // May be {} if using an old server (<0.1.7)
+    public readonly timingEvents: TimingEvents;
 
     @observable.ref
     public response: HtkResponse | 'aborted' | undefined;
@@ -272,7 +242,7 @@ export class HttpExchange extends HTKEventBase {
     @observable
     public abortMessage: string | undefined;
 
-    updateFromCompletedRequest(request: InputCompletedRequest, matchedRule: HtkMockRule | false) {
+    updateFromCompletedRequest(request: InputCompletedRequest, matchedRule: HtkRule | false) {
         if (request.body instanceof HttpBody) {
             // If this request was used in new HttpExchange, it's mutated in some ways, and this
             // will cause problems. Shouldn't happen, but we check against it here just in case:
@@ -298,6 +268,20 @@ export class HttpExchange extends HTKEventBase {
         this.tags = _.union(this.tags, request.tags);
     }
 
+    updateFromUpstreamRequestHead(head: InputRuleEventDataMap['passthrough-request-head']) {
+        if (!this.upstream) {
+            this.upstream = new UpstreamHttpExchange(this, this.apiStore);
+        }
+        this.upstream.updateWithRequestHead(head);
+    }
+
+    updateFromUpstreamRequestBody(body: InputRuleEventDataMap['passthrough-request-body']) {
+        if (!this.upstream) {
+            this.upstream = new UpstreamHttpExchange(this, this.apiStore);
+        }
+        this.upstream.updateWithRequestBody(body);
+    }
+
     markAborted(request: InputFailedRequest) {
         this.response = 'aborted';
         this.searchIndex += '\naborted';
@@ -306,7 +290,12 @@ export class HttpExchange extends HTKEventBase {
         this.tags = _.union(this.tags, request.tags);
 
         if ('error' in request && request.error?.message) {
-            this.abortMessage = request.error.message;
+            this.abortMessage = request.error.message ?? 'Unknown error';
+
+            // Prefix the code if not already present (often happens e.g. ECONNRESET)
+            if (request.error?.code && !this.abortMessage?.includes(request.error.code)) {
+                this.abortMessage = `${request.error.code}: ${this.abortMessage}`;
+            }
         }
 
         if (this.requestBreakpoint) {
@@ -337,22 +326,35 @@ export class HttpExchange extends HTKEventBase {
             ..._.map(response.trailers, (value, key) => `${key}: ${value}`)
         ].join('\n').toLowerCase();
 
-        // Wrap the API promise to also add this response data (but lazily)
-        const requestApiPromise = this._apiPromise;
-        this._apiPromise = lazyObservablePromise(() =>
-            requestApiPromise.then((api) => {
-                if (api) api.updateWithResponse(this.response!);
-                return api;
-            })
-        );
+        this.upstream?.updateAfterDownstreamResponse(this.response);
+    }
+
+    updateFromUpstreamResponseHead(head: InputRuleEventDataMap['passthrough-response-head']) {
+        if (!this.upstream) {
+            this.upstream = new UpstreamHttpExchange(this, this.apiStore);
+        }
+        this.upstream.updateWithResponseHead(head);
+    }
+
+    updateFromUpstreamResponseBody(body: InputRuleEventDataMap['passthrough-response-body']) {
+        if (!this.upstream) {
+            this.upstream = new UpstreamHttpExchange(this, this.apiStore);
+        }
+        this.upstream.updateWithResponseBody(body);
+    }
+
+    updateFromUpstreamAbort(abort: InputRuleEventDataMap['passthrough-abort']) {
+        if (!this.upstream) {
+            this.upstream = new UpstreamHttpExchange(this, this.apiStore);
+        }
+        this.upstream.updateFromUpstreamAbort(abort);
     }
 
     // Must only be called when the exchange will no longer be used. Ensures that large data is
     // definitively unlinked, since some browser issues can result in exchanges not GCing immediately.
     // Important: for safety, this leaves the exchange in a *VALID* but reset state - not a totally blank one.
     cleanup() {
-        this.cache.clear();
-
+        this.computedKeepAlive.dispose();
         this.request.cache.clear();
         this.request.body.cleanup();
 
@@ -360,47 +362,21 @@ export class HttpExchange extends HTKEventBase {
             this.response.cache.clear();
             this.response.body.cleanup();
         }
+
+        if (this.upstream) {
+            this.upstream.cleanup();
+        }
     }
 
     // API metadata:
 
-    // A convenient reference to the service-wide spec for this API - starts loading immediately
-    private _apiMetadataPromise: Promise<ApiMetadata | undefined>;
-
-    // Parsed API info for this specific request, loaded & parsed lazily, only if it's used
-    @observable.ref
-    private _apiPromise = lazyObservablePromise(async () => {
-        const apiMetadata = await this._apiMetadataPromise;
-
-        if (apiMetadata) {
-            // We load the spec, but we don't try to parse API requests until we've received
-            // the whole thing (because e.g. JSON-RPC requests aren't parseable without the body)
-            await when(() => this.isCompletedRequest());
-
-            try {
-                if (apiMetadata.type === 'openapi') {
-                    return new OpenApiExchange(apiMetadata, this);
-                } else if (apiMetadata.type === 'openrpc') {
-                    return await parseRpcApiExchange(apiMetadata, this);
-                } else {
-                    console.log('Unknown API metadata type for host', this.request.parsedUrl.hostname);
-                    console.log(apiMetadata);
-                    throw new UnreachableCheck(apiMetadata, m => m.type);
-                }
-            } catch (e) {
-                logError(e);
-                throw e;
-            }
-        } else {
-            return undefined;
-        }
-    });
-
-    // Fixed value for the parsed API data - returns the data or undefined, observably.
+    private _apiDetector: ApiDetector;
     get api() {
-        if (this._apiPromise.state === 'fulfilled') {
-            return this._apiPromise.value as ApiExchange | undefined;
-        }
+        return this._apiDetector.parsedApi;
+    }
+
+    get apiSpec() {
+        return this._apiDetector.apiMetadata;
     }
 
     // Breakpoint data:

@@ -3,7 +3,7 @@ import * as _ from 'lodash';
 import { UnreachableCheck } from '../../util/error';
 
 import {
-    HtkMockRule,
+    HtkRule,
     RuleType,
     HandlerClassKey,
     MatcherClassKey
@@ -233,7 +233,7 @@ export function summarizeHandlerClass(key: HandlerClassKey): string {
         case 'ipns-resolve-result':
             return "Return a fixed IPNS resolved address";
         case 'ipns-publish-result':
-            return "Return a fixed succesful IPNS result";
+            return "Return a fixed successful IPNS result";
         case 'ipfs-pins-result':
             return "Return a fixed IPFS pinning result";
         case 'ipfs-pin-ls-result':
@@ -273,7 +273,7 @@ export function summarizeHandlerClass(key: HandlerClassKey): string {
 // Summarize the matchers of an instantiated rule
 // Slight varation on the Mockttp explanation to make the
 // comma positioning more consistent for UX of changing rules
-export function summarizeMatcher(rule: HtkMockRule): string {
+export function summarizeMatcher(rule: HtkRule): string {
     const { matchers } = rule;
 
     if (matchers.length === 0) return 'Never';
@@ -294,7 +294,7 @@ export function summarizeMatcher(rule: HtkMockRule): string {
 }
 
 // Summarize the handler of an instantiated rule
-export function summarizeHandler(rule: HtkMockRule): string {
+export function summarizeHandler(rule: HtkRule): string {
     if ('steps' in rule) {
         const stepExplanations = rule.steps.map(s => s.explain());
         return withFirstCharUppercased(

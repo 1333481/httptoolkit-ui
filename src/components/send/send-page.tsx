@@ -26,11 +26,12 @@ const SendPageContainer = styled.div`
 const TabContentContainer = styled.div`
     position: relative;
     height: calc(100vh - ${TAB_BAR_HEIGHT});
-    box-shadow: 0 -2px 5px 0 rgba(0,0,0,${p => p.theme.boxShadowAlpha});
+    box-shadow: 0 -2px 5px 1px rgba(0,0,0,${p => p.theme.boxShadowAlpha});
 `;
 
 const SendPageKeyboardShortcuts = (props: {
     onMoveSelection: (distance: number) => void,
+    onCloseTab: () => void,
     onAbortRequest?: () => void
 }) => {
     useHotkeys('Ctrl+Tab, Cmd+Tab', () => {
@@ -41,9 +42,13 @@ const SendPageKeyboardShortcuts = (props: {
         props.onMoveSelection(-1);
     }, [props.onMoveSelection]);
 
+    useHotkeys('Ctrl+w, Cmd+w', () => {
+        props.onCloseTab();
+    }, [props.onCloseTab]);
+
     useHotkeys('Escape', () => {
         if (props.onAbortRequest) props.onAbortRequest();
-    }, [props.onAbortRequest])
+    }, [props.onAbortRequest]);
 
     return null;
 };
@@ -78,6 +83,11 @@ class SendPage extends React.Component<{
             alert(errorMessage);
         });
     };
+
+    private deleteSelectedRequest = () => {
+        const { deleteRequest, selectedRequest } = this.props.sendStore;
+        deleteRequest(selectedRequest);
+    }
 
     private showRequestOnViewPage = () => {
         const { sentExchange } = this.props.sendStore.selectedRequest;
@@ -114,6 +124,7 @@ class SendPage extends React.Component<{
             />
 
             <SendPageKeyboardShortcuts
+                onCloseTab={this.deleteSelectedRequest}
                 onMoveSelection={moveSelection}
                 onAbortRequest={selectedRequest?.pendingSend?.abort}
             />

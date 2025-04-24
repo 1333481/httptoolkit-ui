@@ -2,21 +2,21 @@ import * as _ from 'lodash';
 
 import { ExchangeMessage } from '../../types';
 import { Theme } from '../../styles';
-import { lastHeader } from '../../util/headers';
+import { getHeaderValue } from '../../util/headers';
 
 import { getBaseContentType } from './content-types';
 
 import { HTKEventBase } from './event-base';
-import { HttpExchange, SuccessfulExchange } from '../http/exchange';
+import { HttpExchangeView, SuccessfulExchange } from '../http/http-exchange-views';
 
 export const getMessageBaseAcceptTypes = (message: ExchangeMessage) =>
-    (lastHeader(message.headers['accept'])?.split(',') || [])
+    (getHeaderValue(message.headers, 'accept')?.split(',') || [])
         .map((acceptType) => getBaseContentType(acceptType));
 
 export const getMessageBaseContentType = (message: ExchangeMessage) =>
-    getBaseContentType(lastHeader(message.headers['content-type']));
+    getBaseContentType(getHeaderValue(message.headers, 'content-type'));
 
-const isMutatativeExchange = (exchange: HttpExchange) => _.includes([
+const isMutatativeExchange = (exchange: HttpExchangeView) => _.includes([
     'POST',
     'PATCH',
     'PUT',
@@ -148,10 +148,10 @@ export function getEventCategory(event: HTKEventBase): EventCategory {
 };
 
 export function describeEventCategory(category: EventCategory) {
-    const categoryColour = getSummaryColour(category);
-    const colourName = _.startCase(_.findKey(highlights, (c) => c === categoryColour)!);
+    const categoryColor = getSummaryColor(category);
+    const colorName = _.startCase(_.findKey(highlights, (c) => c === categoryColor)!);
 
-    return `${colourName}: ${({
+    return `${colorName}: ${({
         "mutative": "a request that might affect the server state (unlike a GET request)",
         "incomplete": "an incomplete request",
         "aborted": "an aborted request",
@@ -182,7 +182,9 @@ const highlights = {
     pink: '#dd3a96'
 };
 
-export function getSummaryColour(exchangeOrCategory: HttpExchange | EventCategory): string {
+export function getSummaryColor(
+    exchangeOrCategory: HttpExchangeView | EventCategory
+): string {
     const category = typeof exchangeOrCategory === 'string' ?
         exchangeOrCategory : exchangeOrCategory.category;
 
